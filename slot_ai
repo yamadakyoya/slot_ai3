@@ -1,1 +1,241 @@
+import random
+import pandas as pd
+import os
 
+# ==============================
+# 設定別確率（内部抽選）
+# ==============================
+# 各設定ごとの当選確率
+SETTINGS = {
+    1: {"p_big": 1/389.2, "p_reg": 1/630.2, "p_cherry": 1/32},
+    2: {"p_big": 1/381.5, "p_reg": 1/574.9, "p_cherry": 1/32},
+    3: {"p_big": 1/381.5, "p_reg": 1/474.9, "p_cherry": 1/32},
+    4: {"p_big": 1/370.0, "p_reg": 1/448.9, "p_cherry": 1/35},
+    5: {"p_big": 1/370.0, "p_reg": 1/364.1, "p_cherry": 1/35},
+    6: {"p_big": 1/361.7, "p_reg": 1/364.1, "p_cherry": 1/35},
+}
+
+# リールに表示されるシンボル
+REELS = ["7", "BAR", "🍒", "🍎", "🔔", "👑"]
+
+# ==============================
+# ライン定義（5ライン）
+# ==============================
+LINES = [
+    [(0,0),(0,1),(0,2)],  # 上段
+    [(1,0),(1,1),(1,2)],  # 中段（メイン）
+    [(2,0),(2,1),(2,2)],  # 下段
+    [(0,0),(1,1),(2,2)],  # 斜め①
+    [(2,0),(1,1),(0,2)],  # 斜め②
+]
+
+# ==============================
+# 払い出し枚数
+# ==============================
+PAYOUT = {
+    "BIG": 240,
+    "REG": 96,
+    "CHERRY": 7,
+    "BELL": 15,
+    "APPLE": 0,
+    "CROWN": 0,
+    "MISS": 0,
+}
+
+# 払い出し取得
+def calc_payout(role):
+    return PAYOUT.get(role, 0)
+
+# ==============================
+# 役判定
+# ==============================
+def judge(symbols):
+    # BIG
+    if symbols == ["7","7","7"]:
+        return "BIG"
+
+    # REG（7・7・BAR）
+    if sorted(symbols) == sorted(["7","7","BAR"]):
+        return "REG"
+
+    # その他役
+    if symbols[0]==symbols[1]==symbols[2]=="🍒":
+        return "CHERRY"
+
+    if symbols[0]==symbols[1]==symbols[2]=="🔔":
+        return "BELL"
+
+    if symbols[0]==symbols[1]==symbols[2]=="🍎":
+        return "APPLE"
+
+    if symbols[0]==symbols[1]==symbols[2]=="👑":
+        return "CROWN"
+
+    # ハズレ
+    return "MISS"
+
+# ==============================
+# スピン処理（内部抽選）
+# ==============================
+def spin_grid(setting):
+    # ランダムで3x3リール生成
+    grid = [[random.choice(REELS) for _ in range(3)] for _ in range(3)]
+
+    # 設定ごとの確率取得
+    s = SETTINGS[setting]
+    r = random.random()
+
+    # BIG当選
+    if r < s["p_big"]:
+        grid[1] = ["7","7","7"]
+
+    # REG当選
+    elif r < s["p_big"] + s["p_reg"]:
+        reels = ["7","7","BAR"]
+        random.shuffle(reels)
+        grid[1] = reels
+
+    # チェリー当選
+    elif random.random() < s["p_cherry"]:
+        grid[1] = ["🍒","🍒","🍒"]
+
+    return grid
+
+# ==============================
+# ① 学習データ作成（全設定）
+# ==============================
+def generate_training_data(spins=50000):
+    """
+    全設定を大量試行してAI用データを作る
+    """
+    data = []
+
+    for setting in range(1, 7):
+        # カウント用
+        result = {
+            "setting": setting,
+            "big":0,"reg":0,"cherry":0,
+            "bell":0,"apple":0,"crown":0,"miss":0
+        }
+
+        # 指定回転数回す
+        for _ in range(spins):
+            grid = spin_grid(setting)
+
+            # 全ライン判定
+            for line in LINES:
+                symbols = [grid[r][c] for r,c in line]
+                role = judge(symbols)
+
+                if role != "MISS":
+                    result[role.lower()] += 1
+                else:
+                    result["miss"] += 1
+
+        data.append(result)
+
+    # CSV保存
+    df = pd.DataFrame(data)
+    df.to_csv("training_data.csv", index=False)
+
+    print("学習データ作成完了")
+    print(df)
+
+# ==============================
+# ② プレイヤーデータ生成
+# ==============================
+def auto_play(setting, spins=20000):
+    """
+    指定設定でデータを作成（AIが当てる用）
+    """
+    result = {
+        "setting": setting,
+        "big":0,"reg":0,"cherry":0,
+        "bell":0,"apple":0,"crown":0,"miss":0
+    }
+
+    for _ in range(spins):
+        grid = spin_grid(setting)
+
+        for line in LINES:
+            symbols = [grid[r][c] for r,c in line]
+            role = judge(symbols)
+
+            if role != "MISS":
+                result[role.lower()] += 1
+            else:
+                result["miss"] += 1
+
+    # CSV保存
+    df = pd.DataFrame([result])
+    df.to_csv("player_test.csv", index=False)
+
+    print("プレイヤーデータ作成完了")
+    print(df)
+
+# ==============================
+# ③ AI設定予測（強化版）
+# ==============================
+def predict_setting():
+    """
+    学習データとプレイヤーデータを比較して設定を推測
+    """
+    train = pd.read_csv("training_data.csv")
+    test = pd.read_csv("player_test.csv")
+
+    test_row = test.iloc[0]
+    test_total = test_row.sum()
+
+    # 重み（重要度）
+    # BIG・REGを重視
+    weights = {
+        "big": 3,
+        "reg": 3,
+        "cherry": 1,
+        "bell": 1
+    }
+
+    best_setting = None
+    best_score = float("inf")
+
+    # 各設定と比較
+    for _, row in train.iterrows():
+        total = row.sum()
+        score = 0
+
+        # 各役ごとの差を計算
+        for key in ["big", "reg", "cherry", "bell"]:
+            test_rate = test_row[key] / test_total
+            train_rate = row[key] / total
+
+            # 重み付き誤差
+            score += weights[key] * abs(test_rate - train_rate)
+
+        # 最も誤差が小さい設定を選択
+        if score < best_score:
+            best_score = score
+            best_setting = row["setting"]
+
+    print("\n===== AI予測（強化版） =====")
+    print("予測設定:", best_setting)
+    print("誤差スコア:", best_score)
+
+# ==============================
+# メイン処理
+# ==============================
+if __name__ == "__main__":
+    print("1=学習データ作成（全設定自動）")
+    print("2=プレイヤー自動実行")
+    print("3=AI設定予測")
+
+    mode = input("選択: ")
+
+    if mode == "1":
+        generate_training_data()
+
+    elif mode == "2":
+        setting = int(input("設定(1-6): "))
+        auto_play(setting)
+
+    elif mode == "3":
+        predict_setting()
